@@ -1,0 +1,1313 @@
+% Compile with pdfLaTeX.
+
+\documentclass[14pt,a4paper,oneside]{extreport}
+
+% Fonts and language
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{mathptmx}
+\usepackage[english]{babel}
+
+% Page layout
+\usepackage[
+  left=25mm, right=22mm,
+  top=40mm, bottom=25mm,
+  headheight=19pt, headsep=24pt
+]{geometry}
+\usepackage{setspace}
+\setstretch{1.5}
+\usepackage{microtype}
+\usepackage{indentfirst}
+
+% Tables and graphics
+\usepackage{booktabs,longtable,array,calc}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{etoolbox}
+\usepackage{needspace}
+\usepackage{fancyhdr}
+
+% Citations: separate brackets, without range compression.
+\usepackage[numbers,sort]{natbib}
+\setcitestyle{citesep={], [}}
+\usepackage{xurl}
+\usepackage[
+  unicode,
+  hidelinks,
+  bookmarksnumbered=true
+]{hyperref}
+\setlength{\emergencystretch}{3em}
+\setlength{\parindent}{10mm}
+\setlength{\parskip}{0pt}
+\widowpenalty=10000
+\clubpenalty=10000
+\brokenpenalty=10000
+\raggedbottom
+
+% Chapter heading spacing
+\makeatletter
+\patchcmd{\@makechapterhead}
+  {\vspace*{50\p@}}
+  {\vspace*{110\p@}}
+  {}{}
+\patchcmd{\@makeschapterhead}
+  {\vspace*{50\p@}}
+  {\vspace*{110\p@}}
+  {}{}
+\makeatother
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}%
+  \setlength{\parskip}{0pt}%
+}
+\providecommand{\passthrough}[1]{#1}
+\BeforeBeginEnvironment{longtable}{\Needspace{100mm}}
+\AtBeginEnvironment{longtable}{%
+  \small%
+  \setstretch{1.0}%
+  \setlength{\tabcolsep}{5pt}%
+}
+\setlength{\LTcapwidth}{\textwidth}
+\setcounter{tocdepth}{2}
+
+% Running headers
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{%
+  \small\bfseries%
+  \parbox[b]{0.89\textwidth}{\nouppercase{\leftmark}}%
+}
+\fancyhead[R]{\small\bfseries\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\sectionmark}[1]{\markboth{\thesection\quad #1}{}}
+\renewcommand{\chaptermark}[1]{\markboth{#1}{}}
+\fancypagestyle{plain}{%
+  \fancyhf{}%
+  \renewcommand{\headrulewidth}{0pt}%
+}
+
+\AtBeginDocument{%
+  \selectlanguage{english}%
+  \renewcommand{\bibname}{References}%
+}
+\renewcommand{\bibname}{References}
+\hypersetup{
+  pdftitle={Development and Experimental Evaluation of a Self-Adaptive Computational Task Scheduling
+    System for Cross-Platform Flutter Applications},
+  pdfauthor={Amir Aminov}
+}
+\begin{document}
+
+\pagenumbering{arabic}
+\setcounter{page}{2}
+\tableofcontents
+\clearpage
+\chapter{Introduction}
+\label{introduction}
+
+\section{Research context and motivation}
+\label{research-context-and-motivation}
+
+Native Flutter applications execute Dart logic in isolates: concurrent execution units with
+their own event loops and isolated mutable application state, communicating through messages.
+The main isolate processes Dart-side input callbacks and prepares the user interface for
+rendering \citep{flutter-isolates}. In the standard Android and Windows embedders, its
+Dart code runs on the platform main thread by default. UI and platform threads were merged
+by default on Android and iOS in Flutter 3.29, and on Windows and macOS in Flutter 3.35
+\citep{flutter-thread-merge}. Consequently, a long synchronous computation can delay Dart
+event handling, frame processing and platform work scheduled on the same thread. Flutter
+recommends background isolates for suitable CPU-intensive operations and distinguishes
+one-off computations from repeated work in long-lived workers. Parsing structured data, compression,
+hashing and local indexing are examples for which execution placement can matter.
+
+The practical objective is to complete useful computations while keeping the interface
+responsive. Frame smoothness and response to input are related outcomes with different
+measurements. Flutter reports frame build and raster durations and the wait between receiving
+vsync and starting frame processing \citep{flutter-frame}. A task can delay that start even
+when subsequent stages remain short. An empirical Android study by Lin et al.~identifies
+several causes of poor responsiveness: rendering work, I/O and scheduling delays
+\citep{lin2024}. Execution placement must therefore be evaluated against both stage duration
+and delays surrounding frame processing.
+
+Background execution also has computational and memory costs. A new isolate must be started,
+inputs made available and results returned. A persistent worker can retain initialized data
+and reuse it, but this state occupies memory between tasks, and submitted work can wait in its
+queue. Ordinary messages may copy mutable data, whereas \texttt{Isolate.run} returns its
+result through a terminating isolate without copying it \citep{dart-run, dart-send}. The
+useful execution context can consequently depend on computation, representation, repetition,
+device and current application conditions.
+
+\section{Problem statement and research gap}
+\label{problem-statement-and-research-gap}
+
+This thesis considers three alternatives for an explicitly submitted CPU-bound Dart task:
+execution on the main isolate, execution in a short-lived isolate and execution in a
+persistent worker. Direct execution avoids isolate dispatch and communication, but occupies
+the UI event loop. Short-lived execution creates a separate isolate for the computation.
+Persistent execution reuses an existing worker. Selecting among these alternatives requires
+considering both task performance and the UI workload with which the task competes.
+
+Runtime execution choice is established. Wagle et al.~(2019) select inline or asynchronous
+execution using observed task costs and adapt the threshold in an HPX-based runtime
+\citep{wagle2019}. Furmento et al.~(2025) adapt task granularity in StarPU using runtime
+performance models and available parallelism \citep{furmento2025}. iAware changes the timing
+of service work according to interaction and system state \citep{iaware2023}. These approaches
+provide precedents for adaptation with different execution mechanisms and performance
+objectives.
+
+The proposed investigation concerns Dart isolate lifecycle, input and result transfer, worker
+availability and Flutter frame telemetry. Existing libraries provide substantial execution
+infrastructure. The unresolved question is when selecting an execution context helps and
+whether recent frame information improves a decision already informed by task characteristics,
+execution history and queue state. The study will test this relationship under native Flutter
+UI workloads, including conditions in which a fixed strategy is sufficient or adaptation
+loses.
+
+\section{Research object, aim and objectives}
+\label{research-object-aim-and-objectives}
+
+The object of research is the execution of explicitly registered CPU-bound Dart tasks in
+native Flutter applications under UI workloads. The investigation focuses on the relationship
+between execution context, task and data characteristics, runtime conditions, and the
+resulting trade-off between frame performance and task cost.
+
+The aim is to develop and experimentally evaluate an application-level execution selector and
+to determine the conditions under which its decisions are useful relative to fixed execution
+strategies and hybrid selection policies. Usefulness concerns a trade-off across frame
+performance, task completion and
+execution cost: a better frame statistic alone will not establish an overall improvement when
+required work is omitted or task latency becomes unacceptable. The methodology will define the
+operational comparison criteria. The objectives are to:
+
+\begin{enumerate}
+  \def\labelenumi{\arabic{enumi}.}
+  \tightlist
+  \item
+    Characterize the three execution modes across computation, data-transfer and submission
+  patterns.
+  \item
+    Implement an open-source Flutter package with an integrable task interface and an
+  explainable runtime selection policy.
+  \item
+    Compare the policy with fixed execution strategies, a calibrated hybrid policy with fixed
+  thresholds, and the same policy with UI feedback disabled under equivalent workloads.
+  \item
+    Assess frame-processing delay and stage duration, task latency, throughput, memory use, and
+  monitoring and scheduling overhead.
+  \item
+    Quantify calibration cost and evaluate policy transfer across device--OS configurations
+  using reproducible workloads and separate calibration and evaluation runs.
+\end{enumerate}
+
+\section{Research questions}
+\label{research-questions}
+
+The investigation addresses three questions:
+
+\textbf{RQ1.} How do the costs of main-isolate execution, short-lived isolates, and persistent
+workers change with computation size, transferred data, task frequency, and device
+performance?
+
+\textbf{RQ2.} How does a runtime execution-selection policy affect frame-processing delay,
+frame-budget exceedances, task latency and scheduling overhead relative to fixed execution
+strategies and hybrid selection baselines,
+and under which workload and runtime conditions are the trade-offs favorable?
+
+\textbf{RQ3.} How do calibration budget and transfer to previously unseen device--OS
+configurations affect frame performance, task latency and scheduling overhead?
+
+RQ1 establishes the cost landscape. RQ2 tests benefits and regressions against both fixed
+execution modes and a calibrated hybrid policy whose decision thresholds remain fixed during
+evaluation. The latter tests whether runtime adaptation improves on a rule fitted in advance.
+The contribution of UI feedback is evaluated separately by disabling only the proposed
+policy's UI inputs. Task-cost estimation, execution history and queue-state inputs remain
+enabled. Both variants start from matched estimates and learning budgets. Their later
+histories can differ because their decisions differ.
+
+Frame-stage budget exceedances will be treated as indicators of expensive frame processing,
+with the display refresh interval as reference. Waiting before frame processing will be
+examined separately using \texttt{vsyncOverhead} and frame-start intervals during continuous
+animation. These observations do not directly measure physical input-to-display latency
+\citep{flutter-frame, flutter-vsync, flutter-build}. The methodology and pilot will establish
+operational metrics and confirm that they detect deliberately introduced CPU blocking before
+evaluating the selector. RQ3 examines calibration effort and transfer between deployment
+configurations, each defined by a device and its operating system. Android and Windows are
+planned targets. The final device inventory will be documented before experiments. Where
+feasible, the evaluation will compare transfer without target calibration, transfer with a
+fixed small calibration budget, and a target-calibrated reference. Configurations used to
+evaluate transfer will not be used to fit the initial policy. Calibration cost will be
+reported separately from evaluation results. These comparisons characterize transfer between
+complete deployment environments and do not identify independent effects of hardware and
+operating system.
+
+\section{Scope and intended contributions}
+\label{scope-and-intended-contributions}
+
+The study is limited to explicitly registered computations whose inputs and outputs can be
+transferred between isolates and whose execution does not directly require the UI. Selection
+occurs before task execution. Persistent-worker concurrency and lifecycle will be controlled
+explicitly; selecting pool capacity is not itself the proposed contribution. Candidate
+workload families include structured-data processing, compression, hashing, indexing and
+numerical transformations. UI operations, ordinary network waiting, arbitrary migration of
+running code and changes to the Flutter engine or operating-system scheduler are outside the
+scope. Flutter Web is excluded because its execution mechanisms differ from the native isolate
+model \citep{flutter-isolates}.
+
+The intended contributions are a measured account of execution costs, an open-source Flutter
+package exposing the selector through an application-facing interface, and an evaluation under
+varying task and UI conditions. Practical evidence about calibration and cases where a fixed
+strategy suffices is part of the expected result. Effectiveness and generality will be
+established by experiments. The study is intended to help developers choose execution
+strategies and understand the costs and limits of application-level adaptation.
+
+\section{Thesis organization}
+\label{thesis-organization}
+
+Chapter 2 reviews the execution model, available libraries, runtime selection, UI-aware
+adaptation and relevant evaluation methods. The subsequent methodology chapter will define the
+artifact, experimental variables, metrics and analysis procedure. Implementation and
+evaluation chapters will describe the prototype and report the collected results. The
+discussion will relate those results to the research questions and threats to validity,
+followed by conclusions and directions for further work.
+\chapter{Literature Review}
+\label{literature-review}
+
+\section{Review scope and approach}
+\label{review-scope-and-approach}
+
+This review examines research relevant to execution-context selection for CPU-bound tasks in
+native Flutter applications. It combines official runtime documentation for mechanism
+semantics, package documentation and selected source code for engineering capabilities, and
+scholarly publications for selection methods, UI-aware adaptation and evaluation. A systematic
+review of self-adaptive systems provides field orientation \citep{wong2022}. The present
+review groups and compares sources by these questions; it is an exploratory review rather than
+a systematic review.
+
+The search was updated on 1 November 2026 using scholarly web discovery, publisher sites,
+author pages and institutional repositories. Crossref, a DOI registration agency exposing
+publisher-deposited metadata, supported bibliographic checks; OpenAlex, an open scholarly
+index, supported forward-citation searches \citep{crossref-api, openalex-docs}. These services
+were selected for accessible metadata and citation links, not as indicators of study quality.
+Selection favored execution choice, granularity, communication, responsiveness and
+calibration. The updated search also covered mobile computation offloading, recent OS-level
+interaction-aware scheduling and empirical evidence of main-thread performance problems.
+A supplementary search used Flutter/Dart scheduling and isolate terms
+independently of the Wagle and iAware citation chains. Its scope, candidate exclusions and
+stopping rule are recorded in the companion search log. Detailed comparisons in this review
+use inspected full-text sections; inaccessible candidates remain in the working reading queue.
+
+\section{Execution costs and responsiveness}
+\label{execution-costs-and-responsiveness}
+
+\subsection{Evidence of main-thread blocking in applications}
+\label{evidence-of-main-thread-blocking}
+
+Responsiveness problems have several mechanisms. Android's documentation identifies
+excessive computation on the main thread as a cause of unresponsiveness, alongside
+blocking I/O and synchronization. Its examples include constructing a complex in-memory
+structure and computing a game move \citep{android-responsive}. An input-dispatch ANR
+involves a timeout measured in seconds. Frame-scale jank can arise much earlier, so ANR
+occurrence and frame-budget exceedances must be evaluated as different outcomes.
+
+Flutter provides a concrete application example in which parsing and converting a large
+JSON response causes jank, and moves this computation to a background isolate
+\citep{flutter-json}. This supports including structured-data processing among the
+experimental workloads. It is an implementation example rather than a measurement of how
+frequently deployed Flutter applications suffer from this problem.
+
+Empirical Android research supplies complementary application evidence. Lin et al.
+identify rendering, I/O and scheduling causes of poor responsiveness \citep{lin2024}.
+Liao et al.~compare performance issues reported in application reviews, Stack Overflow
+discussions and GitHub issues and commits with the academic literature. Their classification
+includes heavy operations and image decoding on the main thread, as well as rendering,
+I/O and synchronization problems \citep[Table~1]{liao2026performance}. The comparison here
+uses the inspected author manuscript identified in the reference entry. Its manually
+classified, issue-oriented sample establishes concrete problem patterns; it does not estimate
+their prevalence across all Android or Flutter applications.
+
+MUSched evaluates foreground interactions in applications alongside a background
+picture-in-picture video call \citep[Table~3]{musched2026}. These studies demonstrate the
+relevance of resource contention and execution dependencies to application responsiveness.
+Three mechanisms must be distinguished: the main thread can be running expensive code,
+blocked awaiting a lock or IPC result, or runnable but waiting for CPU time
+\citep[Secs. 2--3, 6]{musched2026}. Moving eligible computation to a worker can free the
+main isolate to process events, but additional workers can still compete for CPU time.
+It does not by itself remove an unrelated lock or IPC dependency. The proposed evaluation
+therefore separates deliberately submitted CPU work from background competition and records
+both task completion and frame outcomes.
+
+\subsection{UI performance and its limits}
+\label{ui-performance-and-its-limits}
+
+The display refresh interval is the time between refresh opportunities: about 16.7 ms at 60 Hz
+and 8.3 ms at 120 Hz. Flutter's \texttt{buildDuration} measures the frame-processing interval from
+build start to submission for rendering. It includes more than an individual widget build.
+\texttt{rasterDuration} measures the raster stage, while \texttt{totalSpan} runs from vsync
+start to raster finish. Because stages can overlap across frames, total pipeline latency and
+the throughput of frame production are different quantities
+\citep{flutter-frame, flutter-build}.
+
+CPU work can also delay the start of frame processing. \texttt{vsyncOverhead} measures the
+interval from receiving vsync to build start \citep{flutter-vsync}. A short build duration can
+therefore coexist with a long preceding wait. Frame-start intervals under continuous animation
+provide a complementary observation of irregular frame production; idle periods must be
+excluded, and the display refresh rate must be recorded. Neither these intervals nor pipeline
+completion alone establishes the time at which pixels were physically displayed or the full
+response to an input event.
+
+Flutter delivers frame-timing reports in batches, approximately once per second in release and
+every 100 ms in profile/debug, except for the first report \citep{flutter-timings}. The
+selector therefore receives delayed history. Measurement should use profile or release because
+debug adds development checks and runtime overhead that can distort the observations
+\citep{flutter-frame}.
+
+Lin et al.~distinguish responsiveness failures associated with rendering, I/O and scheduling
+\citep[Secs. 2.2, 4.2--4.3]{lin2024}. iAware evaluates reducing contention by moving eligible
+service work around interaction periods \citep[Secs. 3--5]{iaware2023}. Together these studies
+justify examining resource competition while distinguishing it from expensive rendering or
+I/O. The proposed selector acts on eligible application computations, so the evaluation must
+identify which kinds of delay actually change.
+
+\subsection{Isolate lifecycle and data movement}
+\label{isolate-lifecycle-and-data-movement}
+
+Isolates provide separate mutable application state and event loops, with communication
+through messages \citep{flutter-isolates}. This semantic isolation should not be interpreted
+as complete physical resource separation: the VM documents shared program structures and a
+GC-managed heap within an isolate group \citep{dart-vm}. Background workers can therefore
+still compete for device resources. Their presence does not establish an independent CPU or
+memory domain.
+
+The official APIs specify cost-relevant behavior rather than portable timing constants.
+\texttt{Isolate.spawn} gives approximate base memory overhead on the order of 30 KB, without a
+universal startup duration or complete process footprint \citep{dart-spawn}.
+\texttt{Isolate.run} starts a fresh isolate and returns the result through
+\texttt{Isolate.exit} without copying \citep{dart-run}. Ordinary \texttt{SendPort.send} can
+instead copy the mutable objects reachable from a message, while recognized immutable objects
+can be shared. Delivery is asynchronous, but sending can require work proportional to the
+reachable data on the sender side \citep{dart-send}. Representation and return mechanism
+therefore matter alongside byte counts. A closure is a function that can retain variables from
+its surrounding scope. Sending it can involve those retained objects, including more state
+than expected; an unintended captured resource can make the message unsendable. Task
+interfaces should make inputs explicit and avoid accidental capture
+\citep{dart-run, dart-spawn}.
+
+\texttt{TransferableTypedData} further separates preparation from transport. Construction
+takes time proportional to the data size, whereas sending a prepared transferable takes
+constant time and transfers the right to materialize it \citep{dart-transferable}. Similarly,
+a shutdown request is not a measurement of completed cleanup: \texttt{Isolate.kill} requests
+termination according to its control priority \citep{dart-kill}. A cost comparison should
+distinguish preparation, startup, queue waiting, computation, result delivery and observed
+termination. It must also allow for overlap between operations instead of assuming that every
+component adds sequentially to wall time.
+
+\section{Existing Flutter and Dart approaches}
+\label{existing-flutter-and-dart-approaches}
+
+The reviewed ecosystem already supports several execution and lifecycle mechanisms. In
+\texttt{worker\_manager} 7.2.9, normal execution uses priority-queued dispatch to available
+initialized workers. The selected source also exposes \texttt{executeNow}, which invokes the
+callback in the calling isolate, and demand-dependent worker creation and disposal through
+\texttt{dynamicSpawning} \citep{worker-manager}. Supporting local execution and reusable
+workers is therefore existing functionality. Dynamic worker lifetime is not necessarily one
+isolate per task: a worker can serve queued work before becoming idle.
+
+\texttt{isolate\_manager} 6.3.2 provides reusable managers and a one-off \texttt{runFunction}
+helper following create, start, compute and stop operations \citep{isolate-manager}. Its
+reviewed native route returns results by ordinary port messages, unlike the
+terminating-isolate result path of \texttt{Isolate.run}. Ending a worker after the message
+does not retroactively remove that message's copying or preparation cost. Squadron supplies
+another worker-pool design with configurable capacity and generated interfaces
+\citep{squadron}. Worker count, retained state, transport, initialization and queue behavior
+must therefore be specified for package-based comparisons.
+
+\texttt{frame\_scheduler} 1.0.0 controls execution timing using a frame-derived performance
+zone, priorities and duration estimates to execute, defer or drop callbacks locally
+\citep{frame-scheduler}. Its \texttt{fps\_monitor.dart} averages
+\texttt{FrameTiming.totalSpan} and inverts the result: this is a latency-derived FPS proxy
+rather than measured presentation cadence \citep{frame-fps-source}. Deferred submission can
+return before callback completion, so awaiting submission alone does not measure task latency.
+Its budget check is an admission heuristic rather than preemption. Comparison must account for
+completed, deferred and dropped work, since omitting tasks can improve frame statistics.
+
+Flutter itself provides \texttt{SchedulerBinding.scheduleTask} for short work between frames,
+ordered by priority. The documentation recommends tasks of up to about a millisecond; under
+the default strategy, priorities below animation do not run while an animation is active
+\citep{flutter-schedule-task}. This controls admission on the calling isolate, rather than
+relocating computation, and cannot interrupt an already running synchronous function.
+
+Additional packages expose related adaptation. \texttt{cpu\_throttle} 1.0.0 divides iterable
+work into slices and yields to the event loop, with optional slice adaptation
+\citep{cpu-throttle}. Edge-Veda 2.5.0 calibrates workload budgets and adjusts AI-workload
+quality or admission while using persistent workers \citep{edge-veda}. These approaches change
+workload structure or resource use rather than selecting among three contexts for an unchanged
+registered function.
+
+Amplitude Session Replay 1.0.1 is a particularly close engineering comparison because its
+adaptive scheduler combines learned operation costs with frame feedback
+\citep{amplitude-replay}. In \texttt{frame\_load\_tracker.dart}, frame pressure uses the
+larger of build duration plus vsync overhead and raster duration; total pipeline span is
+tracked separately. The tracker smooths observations and checks the age of the latest timing
+report, excluding stale retrospective load from the budget estimate. \texttt{estimator.dart}
+updates duration estimates from measured samples, reacting faster to cost increases than
+decreases under the default smoothing settings. \texttt{capture\_policy.dart} combines
+estimated capture cost, frame budget, recent frame health and encoder backlog to admit or
+postpone capture. Capture-spacing and freshness rules also apply: a maximum-gap rule can
+override the spare-budget condition while encoder-capacity limits remain in force.
+
+The SDK additionally learns separate costs for queued image and paragraph operations in
+\texttt{resource\_task\_policy.dart}. Its FIFO drain admits work against the available budget
+or, when enabled, allows one sufficiently old task to exceed it to prevent starvation. This is
+prior art for combining cost history, UI observations and waiting state at application level.
+The decision in these inspected paths is whether and when capture-related work may proceed; it
+does not select caller-isolate, fresh-isolate or persistent-worker execution for an unchanged
+submitted computation. The thesis therefore needs to evaluate the additional placement
+decision and its lifecycle and transfer costs, rather than claim novelty from combining task
+estimates with frame feedback. This comparison is based on release-source inspection, not a
+measured performance comparison.
+
+The reviewed releases thus provide worker reuse, explicit lifecycle control and several forms
+of adaptive admission. Their comparison motivates examining a task-history and UI-feedback
+policy for execution-context choice, rather than claiming novelty from worker reuse or
+feedback alone.
+
+\section{Runtime execution selection and task granularity}
+\label{runtime-execution-selection-and-task-granularity}
+
+\subsection{Mobile computation offloading}
+\label{mobile-computation-offloading}
+
+Mobile computation offloading studies when application work should execute on a device or
+on external infrastructure. Mora et al.'s recent survey organizes mobile cloud computing
+across cloud, fog, cloudlet and edge resources, including application partitioning,
+decision granularity and context-dependent offloading \citep{mora2024}. Its treatment of
+communication and management overhead provides a framework for asking whether relocation
+saves enough computation to repay its additional costs.
+
+MAUI makes this trade-off explicit for methods marked as eligible for remote execution.
+Its profiler estimates computation, transferable state and network conditions; its solver
+selects local or remote execution to reduce device energy under a latency constraint
+\citep[Secs. 3--6]{maui2010}. Eligibility constraints retain device-specific work such as
+UI operations locally. MAUI also evaluates profiling strategies through an interactive
+video game's frame rate \citep[Sec. 5.2.1]{maui2010}. Here FPS is an evaluation outcome;
+it should not be confused with a frame-history signal used by the placement solver.
+
+CloneCloud combines static eligibility analysis with dynamic profiling of computation
+and migration costs to partition execution between a phone and its clone
+\citep[Secs. 3--4]{clonecloud2011}. It migrates a suspended thread's state and later merges
+the result, rather than dispatching an explicitly registered task. Optimized partitions
+are selected at application launch for the execution and network environment. In its
+evaluation, the smallest workloads remain local because migration overhead outweighs
+remote execution savings \citep[Sec. 6]{clonecloud2011}. This is evidence for considering
+local execution as a meaningful alternative, rather than assuming that offloading wins.
+
+The present study applies execution-choice reasoning to an entirely on-device setting. It
+keeps the registered computation and required result fixed while selecting the main
+isolate, a fresh isolate or a persistent worker. Relevant costs include isolate startup,
+input preparation, result delivery and queue waiting. Flutter frame feedback introduces an
+interactive constraint alongside task cost. Remote servers, network allocation and
+application partitioning remain outside the experimental scope. Offloading research already
+establishes adaptive placement and overhead-aware decisions; its network and energy models
+cannot supply the break-even costs for Dart isolate creation, messaging and worker reuse.
+
+\subsection{Selection as a decision problem}
+\label{selection-as-a-decision-problem}
+
+Algorithm-selection research describes choosing an alternative according to instance
+characteristics and observed performance \citep{smithmiles2009}. The analogy is useful even
+though the proposed modes execute the same computation rather than different solving
+algorithms. Task type, data representation, repetition and worker state are candidate
+descriptors; the selection criterion must include both task and UI outcomes.
+
+SATzilla makes feature computation part of the selection cost and includes fallback behavior
+when feature extraction is unsuitable \citep{satzilla2008}. ASlib distinguishes the strongest
+fixed algorithm from a virtual selector choosing the best alternative for each stored instance
+\citep{aslib2016}. Together, these works suggest two questions for this thesis: whether the
+modes have complementary strengths and whether exploiting them costs less than the potential
+benefit. A retrospective per-task winner can provide descriptive context, but interacting
+queues and UI effects prevent treating it automatically as an attainable online bound.
+
+Online algorithm selection also has to learn from incomplete observations. Gagliolo and
+Schmidhuber discuss training cost, online model updates and exploration versus exploitation
+\citep[Secs. 1, 5--6]{gagliolo2006}. Their portfolio allocates computation time among
+concurrently run algorithms, whereas this thesis chooses one execution mode before each
+submitted task starts. In our setting, executing one mode reveals its cost but not the other
+modes' costs on the same submission. A selector that never revisits alternatives can retain
+inaccurate estimates, particularly after workload changes. This motivates documenting initial
+calibration, controlled probes or estimate aging and counting their cost. Measuring all modes
+offline does not make those observations available to the deployed selector; a bandit
+algorithm is one possible response, not a requirement of the thesis.
+
+\subsection{The closest execution-choice precedent}
+\label{the-closest-execution-choice-precedent}
+
+Wagle et al.~investigate choosing inline execution or a new asynchronous HPX lightweight task
+\citep[pp.~4--6]{wagle2019}. Their baseline already uses history: after enough observations,
+duration is compared with fixed lower and upper thresholds, retaining the previous mode
+between them. The adaptive extension tunes the threshold through APEX and stops after
+convergence. Runtime execution choice, history and threshold adaptation are therefore
+established parts of the comparison.
+
+Results depend on the evaluated platform: adaptive tuning produces strong gains in some AMD
+cases but no average improvement in the reported Intel experiment \citep[p.~8]{wagle2019}.
+This supports including unfavorable outcomes and a strong history-based control. The study
+uses iterative numerical work on server processors; Dart isolate lifecycle, message transfer
+and the UI responsibilities of the main isolate introduce different costs and constraints.
+
+\subsection{Granularity and overhead research}
+\label{granularity-and-overhead-research}
+
+Bora et al.~combine queueing analysis, simulation and experiments to study how tiny tasks
+balance load distribution against management overhead \citep{bora2023}. The 2023 journal
+version evaluates Spark and hybrid Slurm/MPI/OpenMP, extending the earlier Spark-focused
+manuscript. It distinguishes useful service, waiting and overhead rather than treating
+parallel execution time as a single quantity. This motivates component measurements and
+latency distributions. However, splitting a job into many tasks differs from selecting a
+context for an unchanged submitted computation, and its fitted runtime constants cannot become
+Dart thresholds.
+
+Furmento et al.~(2025) adapt granularity online in StarPU. Their Splitter decides whether to
+expand a recursive task before resource scheduling \citep[Sec. 3]{furmento2025}. Periodic
+linear programming uses performance estimates and available work; calibrated models and
+parameters are still required, and memory transfers remain outside that model
+\citep[Secs. 4.2--4.4]{furmento2025}. The dense linear-algebra evaluation includes losing
+cases on smaller inputs \citep[Sec. 5.3]{furmento2025}; a separate experiment distinguishes
+decision and splitting overhead \citep[Sec. 5.5]{furmento2025}. These findings support
+measuring policy cost and current parallelism, while the actions remain task decomposition on
+CPU/GPU resources rather than Dart execution-context choice.
+
+\section{UI-aware adaptation and feedback organization}
+\label{ui-aware-adaptation-and-feedback-organization}
+
+\subsection{Interaction and resource-aware systems}
+\label{interaction-and-resource-aware-systems}
+
+iAware combines touch activity, frame-rate information and resource observations to classify
+interaction state \citep[Secs. 3.1--3.2]{iaware2023}. Its model is trained offline, including
+separate datasets for device series. Eligible system-service work is advanced or deferred
+after dependency checks \citep[Secs. 3.3--3.4]{iaware2023}. Evaluation uses two Android
+smartphones and compares Schedutil, SmartSwap and zTT, separating FPS and launch latency and
+reporting monitoring overhead \citep[Secs. 4, 5.1, 5.4]{iaware2023}. The implementation
+changes service/library code, so its deployment authority differs from an ordinary application
+library.
+
+For the present study, iAware establishes that UI-aware adaptation already combines several
+kinds of observations. It also demonstrates why task eligibility, model preparation and device
+specificity belong in the comparison. Its action is changing when system work occurs. The
+proposed selector changes where a registered application computation executes, while retaining
+its required result. These distinctions concern decision authority and task semantics, rather
+than the presence of a feedback loop alone.
+
+MobiRL optimizes smoothness and power through CPU/GPU frequency limits. The deployed actor
+observes the system every ten rendered frames \citep[Secs. 4.3--4.4, 5.4.6]{dou2025}. The
+paper separates feature-collection and inference costs, supporting explicit accounting for
+observation and decisions \citep[Sec. 5.8]{dou2025}. Privileged Android integration and
+possible hardware-dependent retraining differ from deploying a portable Flutter library
+\citep[Sec. 6]{dou2025}. Its system-state adaptation is relevant, while its action space and
+training cost must remain explicit in the comparison.
+
+A recent OS-level approach is MUSched, which assigns interaction-critical threads to a VIP
+scheduling class between real-time and ordinary fair-scheduled work. Framework events
+identify critical work, while eBPF-based policies govern its scheduling and bounded priority
+boosts \citep[Secs. 4--5]{musched2026}. It propagates interaction priority through lock
+and Binder dependencies, addressing cases where a main thread waits for lower-priority
+work; the motivating example follows a main-thread IPC request
+\citep[Fig.~1]{musched2026}. Its evaluation distinguishes CPU scheduling waits and
+dependency-related waits and includes concurrent foreground/background interactions
+\citep[Sec. 6, Table~3]{musched2026}. Kernel and framework integration give it authority
+over competing threads across the system, beyond an application library's task dispatch.
+
+Zheng et al.~address a different layer: process management. Their measurements associate
+slow UI responses with resource competition from background applications, including
+applications whose nominal lifecycle state does not reflect their actual user-visible
+activity \citep[Secs. 3--4]{zheng2024process}. Their redesigned process-management model
+uses runtime behavior to govern background resource retention
+\citep[Secs. 5--6]{zheng2024process}. The study was published in 2024, while its
+large-scale observational measurements were collected in 2022. Its vendor-specific
+population and system intervention should not be read as a current prevalence estimate for
+Flutter applications.
+
+These systems distinguish several useful actions: deferring service work, changing frequency
+limits, prioritizing dependency chains and managing background processes. Choosing a Dart
+execution context is another action with a narrower scope. It can change the computation
+occupying the main isolate and the amount of competing worker activity, but cannot grant
+OS scheduling priority or control other applications. Their findings motivate measuring
+waiting and resource competition alongside the submitted task's execution time.
+
+Lv et al.~take another approach by restructuring rendering jobs according to whether event
+results require display \citep{lv2025}. Their study distinguishes frame production from event
+response and evaluates the technique using an instrumented synthetic Android application. This
+is useful evidence about metric selection and an alternative intervention. A selector for
+ordinary computations does not restructure rendering. Selectively skipping rendering jobs
+changes the work performed, so comparisons should distinguish completed application events
+from produced frames.
+
+\subsection{MAPE-K and policy design}
+\label{mape-k-and-policy-design}
+
+Autonomic-computing research established systems that observe and adjust their operation
+toward stated goals \citep{kephart2003}. Rainbow separates reusable adaptation infrastructure
+from system-specific observations, models and strategies \citep{rainbow2004}. MAPE-K provides
+a related organization into monitoring, analysis, planning, execution and shared knowledge;
+Arcaini et al.~explicitly model such loops and their properties \citep{arcaini2015}. These
+concepts provide vocabulary for the proposed architecture, rather than evidence that any
+particular selection policy will be effective.
+
+For this project, monitoring could collect task history, queue state and frame reports;
+analysis could estimate pressure or relative costs; planning could select an eligible context;
+execution could dispatch work; and knowledge could retain estimates and calibration. This
+mapping is a proposed design interpretation. It does not require five separate services or
+commit the implementation to a formal model. A named reference architecture alone would not
+distinguish the thesis from existing adaptive systems.
+
+Filieri et al.~connect software adaptation to measurable goals, disturbances, transients and
+delayed observations \citep{filieri2015}. These concerns apply to stale Flutter reports and
+the overhead of changing decisions. MAPE-K organizes the available observations and actions;
+the performance of our policy will be tested against fixed execution strategies, a calibrated
+hybrid policy with fixed thresholds, and the same selector without UI signals.
+
+\section{Evaluation and calibration implications}
+\label{evaluation-and-calibration-implications}
+
+The evaluation must distinguish frame-stage work, waiting before frame processing and
+application-task completion. Build/raster distributions and their budget exceedances describe
+stage cost; \texttt{vsyncOverhead} and frame-start intervals under continuous animation cover
+complementary delays. Task latency includes queue waiting and result delivery, while
+throughput counts completed work \citep{flutter-frame, flutter-vsync, iaware2023}. The pilot
+should introduce controlled main-isolate blocking and background CPU competition to check
+which measures respond. The experiments will record the Flutter SDK version, target
+operating system and UI/platform-thread configuration. With merged threads, CPU-bound work
+in the main isolate occupies the platform main thread. Native work on that thread is an
+additional source of load, so a frame delay must not automatically be attributed to a
+submitted task. The selector controls only explicitly registered computations. Input-event response may be added with explicit start/end points; it
+must not be labelled physical input-to-display latency without presentation evidence.
+
+The comparison should include a calibrated hybrid policy that selects an execution mode
+using task characteristics and worker availability. Its thresholds will be fitted on separate
+calibration runs and held fixed during evaluation. This comparator tests whether a practical
+rule configured in advance is sufficient. To isolate UI feedback, compare the same
+cost/history/queue policy with and without frame signals, keeping initial calibration, non-UI
+inputs and learning budgets matched. History can then evolve differently as a consequence of
+decisions. Fixed main, fresh-isolate and persistent-worker strategies remain separate
+comparators for characterizing execution costs. Controlled policy comparisons will use the
+same execution mechanisms, data representations and worker capacity. Record completed work,
+latency tails, memory, monitoring and decision costs, including optional probes. Smoothing
+frames by dropping required work does not establish a benefit.
+
+Existing worker packages also provide practical reference implementations.
+\texttt{worker\_manager} is an initial candidate, with \texttt{isolate\_manager} as an
+alternative \citep{worker-manager, isolate-manager}. An integration pilot will establish
+which package configuration supports the selected workloads and completion semantics. The
+package comparison will use the same task functions and inputs, with worker count,
+initialization and lifecycle settings documented. Input preparation, message transfer and
+result delivery will be included in end-to-end measurements. Differences in these mechanisms
+will be reported as package-level costs rather than attributed solely to the selection
+policy. Admission schedulers such as \texttt{frame\_scheduler} require separate treatment
+because they may defer or drop work \citep{frame-scheduler}. Any such comparison must account
+for completed, deferred and dropped tasks together with task latency and frame outcomes.
+
+Performance-evaluation research also warns against relying on a single favorable run. Georges
+et al.~distinguish startup from steady-state behavior and discuss variability and aggregation
+\citep{georges2007}. Barrett et al.~show that stable post-warmup behavior cannot simply be
+assumed in the JIT runtimes they studied \citep{barrett2017}. These findings motivate
+retaining run-level data and examining stability; they do not establish identical behavior in
+Flutter's native AOT execution. Cold worker initialization, warm dispatch and policy
+adaptation phases should be identifiable in the planned experiment.
+
+Biørn-Hansen et al.'s cross-platform study, including Flutter, demonstrates the value of
+explicit comparable operations and hardware diversity \citep{biornhansen2020}. Its historical
+framework rankings and platform-feature workloads do not answer the isolate question. For RQ3,
+calibration should be evaluated as part of deployment cost. Where the available device
+inventory permits, configurations used for initial calibration should be separated from those
+used to evaluate transfer. Each configuration combines hardware and an operating system.
+Results should characterize transfer across these configurations without attributing observed
+differences independently to hardware or operating system. Calibration budgets should report
+both the number of task measurements and elapsed calibration time. Evaluation runs must be
+separate from calibration runs. Any online updates permitted during evaluation should use
+matched budgets across policy variants. Different input representations, retained worker state
+or greater pool capacity must not be mistaken for benefits of the selection rule itself.
+
+Calibration also needs a precise meaning. The reviewed approaches include offline training of
+a state classifier, fitting runtime performance models and tuning a selection threshold online
+\citep{iaware2023, furmento2025, wagle2019}. These preparations have different data
+requirements and costs. For this thesis, per-device cost measurement, initial rule fitting and
+subsequent online updates should be identified separately. A policy adapting during execution
+is not thereby free of prior calibration.
+
+MAUI supplies a concrete example of observation cost: estimating transferable state can
+require serialization even when the method eventually runs locally. Its incremental state
+transfer also makes later transfer costs depend on earlier placement choices
+\citep[Sec. 5.2.1]{maui2010}. Thus, fresh estimates are not free, and the policy can change
+the costs it observes. For the proposed selector, feature collection, timing updates and any
+calibration probes should be counted alongside dispatch. Reusing estimates may reduce this
+cost but requires an explicit rule for aging or refreshing them when workload conditions
+change. This supports measuring calibration cost rather than assuming that more frequent
+measurement always improves the overall result.
+
+\section{Comparative synthesis and research gap}
+\label{comparative-synthesis-and-research-gap}
+
+The reviewed approaches intervene at different levels. Table 2.1 summarizes the decisions most
+relevant to the thesis. Observations and objectives describe the cited work's setting, not
+equivalent measurements that can be compared numerically across papers.
+
+\begin{longtable}{|
+  >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep - 5\arrayrulewidth) * \real{0.2500}}|
+  >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep - 5\arrayrulewidth) * \real{0.2500}}|
+  >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep - 5\arrayrulewidth) * \real{0.2500}}|
+  >{\raggedright\arraybackslash}p{(\linewidth - 8\tabcolsep - 5\arrayrulewidth) * \real{0.2500}}|}
+\caption{Decision scope of the closest reviewed approaches.}\tabularnewline
+\hline
+\begin{minipage}[b]{\linewidth}\raggedright
+Approach
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Observations
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Decision and objective
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Preparation and evaluation
+\end{minipage} \\
+\hline
+\endfirsthead
+\hline
+\begin{minipage}[b]{\linewidth}\raggedright
+Approach
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Observations
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Decision and objective
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+Preparation and evaluation
+\end{minipage} \\
+\hline
+\endhead
+\hline
+\endlastfoot
+  MAUI / CloneCloud \citep{maui2010, clonecloud2011}
+    & Computation, state transfer and network costs
+    & Device or remote execution; energy or execution cost
+    & Runtime profiling / profiled partitions; phone--server tests
+    \\ \hline
+%
+  Wagle et al. \citep{wagle2019}
+    & Per-primitive history
+    & Inline or asynchronous; numerical runtime
+    & Threshold tuning; HPX, no UI
+    \\ \hline
+%
+  Bora et al. \citep{bora2023}
+    & Cost/load distributions
+    & Granularity and queueing analysis
+    & Fitted overhead model; analysis, simulation and experiments
+    \\ \hline
+%
+  StarPU Splitter \citep{furmento2025}
+    & Performance estimates; available work
+    & Expand recursive tasks; CPU/GPU throughput
+    & Calibrated models; linear-algebra experiments
+    \\ \hline
+%
+  iAware \citep{iaware2023}
+    & Touch, FPS, resource state
+    & Advance/defer service work
+    & Device-series training; Android system changes
+    \\ \hline
+%
+  MobiRL \citep{dou2025}
+    & System state; trained actor
+    & Frequency limits; smoothness and power
+    & Training and retraining; privileged Android tests
+    \\ \hline
+%
+  MUSched \citep{musched2026}
+    & Interaction-critical threads; IPC/lock dependencies
+    & VIP priority and dependency propagation; responsiveness
+    & Kernel/framework integration; mobile application tests
+    \\ \hline
+%
+  Dart packages \citep{worker-manager, isolate-manager, squadron}
+    & Queue and worker state; configuration
+    & Dispatch and worker lifetime
+    & Selected source and docs; not benchmarked here
+    \\ \hline
+%
+  frame\_scheduler \citep{frame-scheduler}
+    & Latency proxy; priority; cost estimate
+    & Local execution, deferral or dropping
+    & Configured estimates; source inspection
+    \\ \hline
+%
+  Built-in / adjacent adaptation \citep{flutter-schedule-task, cpu-throttle, edge-veda}
+    & Priorities; slice estimates; domain telemetry
+    & Admission, slicing or workload control
+    & API and selected source; not benchmarked here
+    \\ \hline
+%
+  Amplitude Session Replay \citep{amplitude-replay}
+    & Learned costs; frame pressure; timing age; waiting and backlog
+    & Capture and resource admission; no three-context choice in inspected paths
+    & Online updates; 1.0.1 source inspection
+    \\ \hline
+%
+  Proposed study
+    & Tasks, data and history; queue; frames
+    & Main, fresh or persistent; frame and task trade-offs
+    & Calibration and transfer (RQ3), not yet evaluated
+    \\
+%
+\end{longtable}
+
+Three conclusions shape the investigation. Runtime execution selection, computation
+offloading and interaction-aware adaptation are established. Their decisions span method
+placement, task granularity, service timing and OS resource control. The proposed study
+therefore cannot claim novelty from adaptive relocation or UI awareness alone. Dart lifecycle,
+message transfer and persistent worker state require their own cost characterization.
+Adaptation also consumes observation, decision and calibration resources and
+learns from selectively observed executions. Finally, frame feedback is delayed and can
+describe several different kinds of latency. Its contribution should be tested by disabling
+only UI signals in an otherwise matched selector. Comparison with a calibrated hybrid policy
+with fixed thresholds will establish whether runtime adaptation adds value beyond a rule
+configured in advance. Package-level references will provide a complementary assessment of
+practical execution costs.
+
+The research gap is the unresolved empirical relationship between main-isolate execution,
+fresh-isolate execution and persistent dispatch costs, task characteristics and UI conditions
+in the scoped native Flutter workload. In particular, the reviewed systems do not establish
+when delayed frame feedback adds value beyond a cost/history/queue selector for these three
+alternatives. RQ1 characterizes the alternatives, RQ2
+evaluates context selection and the additional value of UI feedback, and RQ3 examines
+calibration budgets and transfer across device--OS configurations. This leads to a controlled
+prototype evaluation with matched useful
+work, complementary frame observations and explicit accounting for policy overhead.
+\clearpage
+\addcontentsline{toc}{chapter}{References}
+\begingroup
+\setlength{\bibsep}{0.35\baselineskip}
+\interlinepenalty=10000
+% Generated by IEEEtranN.bst, version: 1.14 (2015/08/26)
+\begin{thebibliography}{50}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{#1}
+\csname url@samestyle\endcsname
+\providecommand{\newblock}{\relax}
+\providecommand{\bibinfo}[2]{#2}
+\providecommand{\BIBentrySTDinterwordspacing}{\spaceskip=0pt\relax}
+\providecommand{\BIBentryALTinterwordstretchfactor}{4}
+\providecommand{\BIBentryALTinterwordspacing}{\spaceskip=\fontdimen2\font plus
+\BIBentryALTinterwordstretchfactor\fontdimen3\font minus
+  \fontdimen4\font\relax}
+\providecommand{\BIBforeignlanguage}[2]{{%
+\expandafter\ifx\csname l@#1\endcsname\relax
+\typeout{** WARNING: IEEEtranN.bst: No hyphenation pattern has been}%
+\typeout{** loaded for the language `#1'. Using the pattern for}%
+\typeout{** the default language instead.}%
+\else
+\language=\csname l@#1\endcsname
+\fi
+#2}}
+\providecommand{\BIBdecl}{\relax}
+\BIBdecl
+
+\bibitem[{Flutter team}({\natexlab{a}})]{flutter-isolates}
+\BIBentryALTinterwordspacing
+{Flutter team}, ``Concurrency and isolates,'' Flutter documentation, accessed:
+  Oct. 30, 2026. [Online]. Available:
+  \url{https://docs.flutter.dev/perf/isolates}
+\BIBentrySTDinterwordspacing
+
+\bibitem{flutter-thread-merge}
+Flutter team, ``Merged threads on macOS and Windows,'' Flutter documentation,
+accessed: Nov.~1, 2026. [Online]. Available:
+\url{https://docs.flutter.dev/release/breaking-changes/macos-windows-merged-threads}
+
+\bibitem[{Flutter team}({\natexlab{b}})]{flutter-frame}
+\BIBentryALTinterwordspacing
+------, ``{FrameTiming} class,'' Flutter API documentation, accessed: Oct. 30,
+  2026. [Online]. Available:
+  \url{https://api.flutter.dev/flutter/dart-ui/FrameTiming-class.html}
+\BIBentrySTDinterwordspacing
+
+\bibitem[Lin et~al.(2024)Lin, Liu, Li, Qian, Li, Xiong, and Liu]{lin2024}
+\BIBentryALTinterwordspacing
+H.~Lin, C.~Liu, Z.~Li, F.~Qian, M.~Li, P.~Xiong, and Y.~Liu, ``Aging or
+  glitching? what leads to poor {Android} responsiveness and what can we do
+  about it?'' \emph{IEEE Transactions on Mobile Computing}, vol.~23, no.~2, pp.
+  1521--1533, 2024, accepted author manuscript consulted
+  (\url{https://www.linhao.me/pdf/tmc23-responsiveness.pdf}); section locators
+  refer to this version. [Online]. Available:
+  \url{https://doi.org/10.1109/TMC.2023.3237716}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{Dart team}({\natexlab{a}})]{dart-run}
+\BIBentryALTinterwordspacing
+{Dart team}, ``{Isolate.run},'' Dart API documentation, accessed: Oct. 30,
+  2026. [Online]. Available:
+  \url{https://api.dart.dev/dart-isolate/Isolate/run.html}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{Dart team}({\natexlab{b}})]{dart-send}
+\BIBentryALTinterwordspacing
+------, ``{SendPort.send},'' Dart API documentation, accessed: Oct. 30, 2026.
+  [Online]. Available:
+  \url{https://api.dart.dev/dart-isolate/SendPort/send.html}
+\BIBentrySTDinterwordspacing
+
+\bibitem[Wagle et~al.(2019)Wagle, Monil, Huck, Malony, Serio, and
+  Kaiser]{wagle2019}
+\BIBentryALTinterwordspacing
+B.~Wagle, M.~A.~H. Monil, K.~Huck, A.~D. Malony, A.~Serio, and H.~Kaiser,
+  ``Runtime adaptive task inlining on asynchronous multitasking runtime
+  systems,'' in \emph{Proceedings of the 48th International Conference on
+  Parallel Processing (ICPP)}, 2019, pp. 1--10, article 76. [Online].
+  Available: \url{https://doi.org/10.1145/3337821.3337915}
+\BIBentrySTDinterwordspacing
+
+\bibitem[Furmento et~al.(2025)Furmento, Guermouche, Lucas, Morin, Thibault, and
+  Wacrenier]{furmento2025}
+\BIBentryALTinterwordspacing
+N.~Furmento, A.~Guermouche, G.~Lucas, T.~Morin, S.~Thibault, and P.-A.
+  Wacrenier, ``Optimizing parallel heterogeneous system efficiency: Dynamic
+  task graph adaptation with recursive tasks,'' \emph{Journal of Parallel and
+  Distributed Computing}, vol. 205, p. 105157, 2025, author manuscript
+  HAL-05199066v1, 2025
+  (\url{https://hal.science/hal-05199066/file/paper_unreplaced.pdf}); section
+  locators refer to this version. [Online]. Available:
+  \url{https://doi.org/10.1016/j.jpdc.2025.105157}
+\BIBentrySTDinterwordspacing
+
+\bibitem[Zheng et~al.(2023)Zheng, Li, Xiong, Liu, Ji, Zhu, and Yu]{iaware2023}
+\BIBentryALTinterwordspacing
+Y.~Zheng, C.~Li, Y.~Xiong, W.~Liu, C.~Ji, Z.~Zhu, and L.~Yu, ``{iAware}:
+  Interaction aware task scheduling for reducing resource contention in mobile
+  systems,'' \emph{ACM Transactions on Embedded Computing Systems}, vol.~22,
+  no.~5s, pp. 145:1--145:24, 2023. [Online]. Available:
+  \url{https://doi.org/10.1145/3609391}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{Flutter team}({\natexlab{c}})]{flutter-vsync}
+\BIBentryALTinterwordspacing
+{Flutter team}, ``{FrameTiming.vsyncOverhead},'' Flutter API documentation,
+  accessed: Oct. 31, 2026. [Online]. Available:
+  \url{https://api.flutter.dev/flutter/dart-ui/FrameTiming/vsyncOverhead.html}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{Flutter team}({\natexlab{d}})]{flutter-build}
+\BIBentryALTinterwordspacing
+------, ``{FrameTiming.buildDuration},'' Flutter API documentation, accessed:
+  Oct. 31, 2026. [Online]. Available:
+  \url{https://api.flutter.dev/flutter/dart-ui/FrameTiming/buildDuration.html}
+\BIBentrySTDinterwordspacing
+
+\bibitem[Wong et~al.(2022)Wong, Wagner, and Treude]{wong2022}
+\BIBentryALTinterwordspacing
+T.~Wong, M.~Wagner, and C.~Treude, ``Self-adaptive systems: A systematic
+  literature review across categories and domains,'' \emph{Information and
+  Software Technology}, vol. 148, p. 106934, 2022. [Online]. Available:
+  \url{https://doi.org/10.1016/j.infsof.2022.106934}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{Crossref}()]{crossref-api}
+\BIBentryALTinterwordspacing
+{Crossref}, ``{REST API},'' Official metadata-service documentation, accessed:
+  Oct. 31, 2026. [Online]. Available:
+  \url{https://www.crossref.org/documentation/retrieve-metadata/rest-api/}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{OpenAlex}()]{openalex-docs}
+\BIBentryALTinterwordspacing
+{OpenAlex}, ``{OpenAlex Help Center},'' Official scholarly-index documentation,
+  accessed: Oct. 31, 2026. [Online]. Available:
+  \url{https://help.openalex.org/}
+\BIBentrySTDinterwordspacing
+
+\bibitem{android-responsive}
+Android Developers, ``Keep your app responsive,'' Android documentation,
+accessed: Nov.~1, 2026. [Online]. Available:
+\url{https://developer.android.com/topic/performance/anrs/keep-your-app-responsive}
+
+\bibitem{flutter-json}
+Flutter team, ``Parse JSON in the background,'' Flutter cookbook,
+accessed: Nov.~1, 2026. [Online]. Available:
+\url{https://docs.flutter.dev/cookbook/networking/background-parsing}
+
+\bibitem{liao2026performance}
+D.~Liao, S.~Pan, S.~Yang, Y.~Zhao, Z.~Xing, and X.~Sun, ``A comparative study
+of Android performance issues in real-world applications and literature,''
+\emph{ACM Transactions on Software Engineering and Methodology}, vol.~35, no.~7,
+pp.~1--32, 2026, doi: 10.1145/3771932. [Online]. Available:
+\url{https://dl.acm.org/doi/10.1145/3771932}.
+Consulted author manuscript: arXiv:2407.05090v3, Oct.~2025, 30~pp.,
+\url{https://arxiv.org/abs/2407.05090v3}; Table~1 refers to this manuscript.
+
+\bibitem{musched2026}
+J.~Xiao et~al., ``Surviving the impossible trinity: Revisiting CPU scheduling
+problem on modern COTS mobile devices (Operational Systems),'' in
+\emph{20th USENIX Symposium on Operating Systems Design and Implementation
+(OSDI 26)}, 2026, pp.~2353--2366. [Online]. Available:
+\url{https://www.usenix.org/conference/osdi26/presentation/xiao}
+
+\bibitem[{Flutter team}({\natexlab{e}})]{flutter-timings}
+\BIBentryALTinterwordspacing
+{Flutter team}, ``{SchedulerBinding.addTimingsCallback},'' Flutter API
+  documentation, accessed: Oct. 30, 2026. [Online]. Available:
+  \url{https://api.flutter.dev/flutter/scheduler/SchedulerBinding/addTimingsCallback.html}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{Dart team}({\natexlab{c}})]{dart-vm}
+\BIBentryALTinterwordspacing
+{Dart team}, ``Introduction to {Dart VM},'' Dart SDK runtime documentation, sDK
+  commit 416e33b0ffaef062a60ec966bb8c82ed2b83f128; accessed: Oct. 30, 2026.
+  [Online]. Available:
+  \url{https://github.com/dart-lang/sdk/blob/416e33b0ffaef062a60ec966bb8c82ed2b83f128/runtime/docs/README.md}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{Dart team}({\natexlab{d}})]{dart-spawn}
+\BIBentryALTinterwordspacing
+------, ``{Isolate.spawn},'' Dart API documentation, accessed: Oct. 30, 2026.
+  [Online]. Available:
+  \url{https://api.dart.dev/dart-isolate/Isolate/spawn.html}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{Dart team}({\natexlab{e}})]{dart-transferable}
+\BIBentryALTinterwordspacing
+------, ``{TransferableTypedData} class,'' Dart API documentation, accessed:
+  Oct. 30, 2026. [Online]. Available:
+  \url{https://api.dart.dev/dart-isolate/TransferableTypedData-class.html}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{Dart team}({\natexlab{f}})]{dart-kill}
+\BIBentryALTinterwordspacing
+------, ``{Isolate.kill},'' Dart API documentation, accessed: Oct. 30, 2026.
+  [Online]. Available:
+  \url{https://api.dart.dev/dart-isolate/Isolate/kill.html}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{worker\_manager contributors}()]{worker-manager}
+\BIBentryALTinterwordspacing
+{worker\_manager contributors}, ``{worker\_manager}: release 7.2.9,'' Package
+  documentation and selected native source, selected files matched against the
+  7.2.9 release archive, not a verified whole-release commit; accessed: Oct.
+  30, 2026. [Online]. Available:
+  \url{https://github.com/dsrenesanse/worker_manager/blob/5c70ecc12f459b97c476ce3dd7a2da4218d71121/lib/src/scheduling/executor.dart}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{isolate\_manager contributors}()]{isolate-manager}
+\BIBentryALTinterwordspacing
+{isolate\_manager contributors}, ``{isolate\_manager}: release 6.3.2,'' Package
+  documentation and selected native source, source tag v6.3.2, commit
+  1437cc927af3eaa4910cc62090b4d5c4004c86b8; accessed: Oct. 30, 2026. [Online].
+  Available:
+  \url{https://github.com/lamnhan066/isolate_manager/blob/1437cc927af3eaa4910cc62090b4d5c4004c86b8/lib/src/isolate_manager.dart}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{Squadron contributors}()]{squadron}
+\BIBentryALTinterwordspacing
+{Squadron contributors}, ``{Squadron}: release 7.4.4,'' Package and
+  concurrency-settings documentation, accessed: Oct. 30, 2026. [Online].
+  Available: \url{https://pub.dev/packages/squadron/versions/7.4.4}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{frame\_scheduler contributors}({\natexlab{a}})]{frame-scheduler}
+\BIBentryALTinterwordspacing
+{frame\_scheduler contributors}, ``{frame\_scheduler}: release 1.0.0,'' Package
+  documentation and selected source, source commit
+  c40bac847823579376734d9e7a9e118070f9be83; accessed: Oct. 30, 2026. [Online].
+  Available:
+  \url{https://github.com/Brah-Timo/frame_scheduler/blob/c40bac847823579376734d9e7a9e118070f9be83/lib/src/scheduler_controller.dart}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{frame\_scheduler contributors}({\natexlab{b}})]{frame-fps-source}
+\BIBentryALTinterwordspacing
+------, ``{frame\_scheduler} 1.0.0: {fps\_monitor.dart},'' Selected release
+  source, lines 189--231, accessed: Oct. 31, 2026. [Online]. Available:
+  \url{https://github.com/Brah-Timo/frame_scheduler/blob/c40bac847823579376734d9e7a9e118070f9be83/lib/src/fps_monitor.dart}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{Flutter team}({\natexlab{f}})]{flutter-schedule-task}
+\BIBentryALTinterwordspacing
+{Flutter team}, ``{SchedulerBinding.scheduleTask},'' Flutter API documentation,
+  accessed: Oct. 31, 2026. [Online]. Available:
+  \url{https://api.flutter.dev/flutter/scheduler/SchedulerBinding/scheduleTask.html}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{cpu\_throttle contributors}()]{cpu-throttle}
+\BIBentryALTinterwordspacing
+{cpu\_throttle contributors}, ``{cpu\_throttle}: release 1.0.0,'' Package
+  documentation and selected release source, accessed: Oct. 31, 2026. [Online].
+  Available: \url{https://pub.dev/packages/cpu_throttle/versions/1.0.0}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{Edge-Veda contributors}()]{edge-veda}
+\BIBentryALTinterwordspacing
+{Edge-Veda contributors}, ``{Edge-Veda}: release 2.5.0,'' Package documentation
+  and selected scheduler source, accessed: Oct. 31, 2026. [Online]. Available:
+  \url{https://pub.dev/packages/edge_veda/versions/2.5.0}
+\BIBentrySTDinterwordspacing
+
+\bibitem[{Amplitude}()]{amplitude-replay}
+\BIBentryALTinterwordspacing
+{Amplitude}, ``{Amplitude Session Replay Flutter SDK}: release 1.0.1,'' Package
+  release and selected capture-admission source, accessed: Oct. 31, 2026.
+  [Online]. Available:
+  \url{https://pub.dev/packages/amplitude_session_replay/versions/1.0.1}
+\BIBentrySTDinterwordspacing
+
+\bibitem{mora2024}
+H.~Mora, F.~A. Pujol, T.~Ramirez-Gordillo, and A.~Jimeno, ``Mobile cloud
+computing paradigm: A survey of operational concerns, challenges and open
+issues,'' \emph{Transactions on Emerging Telecommunications Technologies},
+vol.~35, no.~12, article e70020, 2024, doi: 10.1002/ett.70020.
+[Online]. Available: \url{https://doi.org/10.1002/ett.70020}
+
+\bibitem{maui2010}
+E.~Cuervo et~al., ``MAUI: Making smartphones last longer with code offload,'' in
+\emph{Proceedings of the 8th International Conference on Mobile Systems,
+Applications, and Services (MobiSys)}, 2010, pp.~49--62,
+doi: 10.1145/1814433.1814441. [Online]. Available:
+\url{https://doi.org/10.1145/1814433.1814441}
+
+\bibitem{clonecloud2011}
+B.-G.~Chun, S.~Ihm, P.~Maniatis, M.~Naik, and A.~Patti, ``CloneCloud: Elastic
+execution between mobile device and cloud,'' in \emph{Proceedings of the Sixth
+Conference on Computer Systems (EuroSys)}, 2011, pp.~301--314,
+doi: 10.1145/1966445.1966473. [Online]. Available:
+\url{https://dl.acm.org/doi/10.1145/1966445.1966473}
+
+\bibitem[Smith-Miles(2009)]{smithmiles2009}
+\BIBentryALTinterwordspacing
+K.~A. Smith-Miles, ``Cross-disciplinary perspectives on meta-learning for
+  algorithm selection,'' \emph{ACM Computing Surveys}, vol.~41, no.~1, pp.
+  6:1--6:25, 2009. [Online]. Available:
+  \url{https://doi.org/10.1145/1456650.1456656}
+\BIBentrySTDinterwordspacing
+
+\bibitem[Xu et~al.(2008)Xu, Hutter, Hoos, and Leyton-Brown]{satzilla2008}
+\BIBentryALTinterwordspacing
+L.~Xu, F.~Hutter, H.~H. Hoos, and K.~Leyton-Brown, ``{SATzilla}:
+  Portfolio-based algorithm selection for {SAT},'' \emph{Journal of Artificial
+  Intelligence Research}, vol.~32, pp. 565--606, 2008. [Online]. Available:
+  \url{https://doi.org/10.1613/jair.2490}
+\BIBentrySTDinterwordspacing
+
+\bibitem[Bischl et~al.(2016)Bischl, Kerschke, Kotthoff, Lindauer, Malitsky,
+  Fr\'{e}chette, Hoos, Hutter, Leyton-Brown, Tierney, and
+  Vanschoren]{aslib2016}
+\BIBentryALTinterwordspacing
+B.~Bischl, P.~Kerschke, L.~Kotthoff, M.~Lindauer, Y.~Malitsky,
+  A.~Fr\'{e}chette, H.~Hoos, F.~Hutter, K.~Leyton-Brown, K.~Tierney, and
+  J.~Vanschoren, ``{ASlib}: A benchmark library for algorithm selection,''
+  \emph{Artificial Intelligence}, vol. 237, pp. 41--58, 2016. [Online].
+  Available: \url{https://doi.org/10.1016/j.artint.2016.04.003}
+\BIBentrySTDinterwordspacing
+
+\bibitem[Gagliolo and Schmidhuber(2006)]{gagliolo2006}
+\BIBentryALTinterwordspacing
+M.~Gagliolo and J.~Schmidhuber, ``Learning dynamic algorithm portfolios,''
+  \emph{Annals of Mathematics and Artificial Intelligence}, vol.~47, pp.
+  295--328, 2006, issue year 2006; online 2007. Section locators refer to the
+  author manuscript at
+  \url{https://sferics.idsia.ch/pub/juergen/gagliolo-amai837.pdf}. [Online].
+  Available: \url{https://doi.org/10.1007/s10472-006-9036-z}
+\BIBentrySTDinterwordspacing
+
+\bibitem[Bora et~al.(2023)Bora, Walker, and Fidler]{bora2023}
+\BIBentryALTinterwordspacing
+S.~Bora, B.~Walker, and M.~Fidler, ``The tiny-tasks granularity trade-off:
+  Balancing overhead versus performance in parallel systems,'' \emph{IEEE
+  Transactions on Parallel and Distributed Systems}, vol.~34, no.~4, pp.
+  1128--1144, 2023. [Online]. Available:
+  \url{https://doi.org/10.1109/TPDS.2022.3233712}
+\BIBentrySTDinterwordspacing
+
+\bibitem[Dou et~al.(2025)Dou, Liu, and Xiao]{dou2025}
+\BIBentryALTinterwordspacing
+X.~Dou, L.~Liu, and L.~Xiao, ``An intelligent scheduling approach on mobile
+  {OS} for optimizing {UI} smoothness and power,'' \emph{ACM Transactions on
+  Architecture and Code Optimization}, vol.~22, no.~1, pp. 12:1--12:27, 2025.
+  [Online]. Available: \url{https://doi.org/10.1145/3674910}
+\BIBentrySTDinterwordspacing
+
+\bibitem{zheng2024process}
+J.~Zheng et~al., ``Rethinking process management for interactive mobile systems,''
+in \emph{Proceedings of the 30th Annual International Conference on Mobile
+Computing and Networking (MobiCom)}, 2024, pp.~215--229,
+doi: 10.1145/3636534.3649357. [Online]. Available:
+\url{https://dl.acm.org/doi/10.1145/3636534.3649357}
+
+\bibitem[Lv et~al.(2025)Lv, Hu, Cui, Yang, Zhou, Deng, and Guan]{lv2025}
+\BIBentryALTinterwordspacing
+M.~Lv, T.~Hu, M.~Cui, T.~Yang, Y.~Zhou, Q.~Deng, and N.~Guan, ``Improving {UI}
+  responsiveness in {Android} by restructured rendering,'' \emph{Journal of
+  Systems Architecture}, vol. 168, p. 103580, 2025. [Online]. Available:
+  \url{https://doi.org/10.1016/j.sysarc.2025.103580}
+\BIBentrySTDinterwordspacing
+
+\bibitem[Kephart and Chess(2003)]{kephart2003}
+\BIBentryALTinterwordspacing
+J.~O. Kephart and D.~M. Chess, ``The vision of autonomic computing,''
+  \emph{Computer}, vol.~36, no.~1, pp. 41--50, 2003. [Online]. Available:
+  \url{https://doi.org/10.1109/MC.2003.1160055}
+\BIBentrySTDinterwordspacing
+
+\bibitem[Garlan et~al.(2004)Garlan, Cheng, Huang, Schmerl, and
+  Steenkiste]{rainbow2004}
+\BIBentryALTinterwordspacing
+D.~Garlan, S.-W. Cheng, A.-C. Huang, B.~Schmerl, and P.~Steenkiste, ``Rainbow:
+  Architecture-based self-adaptation with reusable infrastructure,''
+  \emph{Computer}, vol.~37, no.~10, pp. 46--54, 2004. [Online]. Available:
+  \url{https://doi.org/10.1109/MC.2004.175}
+\BIBentrySTDinterwordspacing
+
+\bibitem[Arcaini et~al.(2015)Arcaini, Riccobene, and Scandurra]{arcaini2015}
+\BIBentryALTinterwordspacing
+P.~Arcaini, E.~Riccobene, and P.~Scandurra, ``Modeling and analyzing {MAPE-K}
+  feedback loops for self-adaptation,'' in \emph{IEEE/ACM 10th International
+  Symposium on Software Engineering for Adaptive and Self-Managing Systems
+  (SEAMS)}, 2015, pp. 13--23. [Online]. Available:
+  \url{https://doi.org/10.1109/SEAMS.2015.10}
+\BIBentrySTDinterwordspacing
+
+\bibitem[Filieri et~al.(2015)Filieri, Maggio, Angelopoulos, D'Ippolito,
+  Gerostathopoulos, Hempel, Hoffmann, Jamshidi, Kalyvianaki, Klein, Krikava,
+  Misailovic, Papadopoulos, Ray, Sharifloo, Shevtsov, Ujma, and
+  Vogel]{filieri2015}
+\BIBentryALTinterwordspacing
+A.~Filieri, M.~Maggio, K.~Angelopoulos, N.~D'Ippolito, I.~Gerostathopoulos,
+  A.~B. Hempel, H.~Hoffmann, P.~Jamshidi, E.~Kalyvianaki, C.~Klein, F.~Krikava,
+  S.~Misailovic, A.~V. Papadopoulos, S.~Ray, A.~M. Sharifloo, S.~Shevtsov,
+  M.~Ujma, and T.~Vogel, ``Software engineering meets control theory,'' in
+  \emph{IEEE/ACM 10th International Symposium on Software Engineering for
+  Adaptive and Self-Managing Systems (SEAMS)}, 2015, pp. 71--82. [Online].
+  Available: \url{https://doi.org/10.1109/SEAMS.2015.12}
+\BIBentrySTDinterwordspacing
+
+\bibitem[Georges et~al.(2007)Georges, Buytaert, and Eeckhout]{georges2007}
+\BIBentryALTinterwordspacing
+A.~Georges, D.~Buytaert, and L.~Eeckhout, ``Statistically rigorous {Java}
+  performance evaluation,'' in \emph{Proceedings of the 22nd ACM SIGPLAN
+  Conference on Object-Oriented Programming Systems and Applications (OOPSLA)},
+  2007, pp. 57--76. [Online]. Available:
+  \url{https://doi.org/10.1145/1297027.1297033}
+\BIBentrySTDinterwordspacing
+
+\bibitem[Barrett et~al.(2017)Barrett, Bolz-Tereick, Killick, Mount, and
+  Tratt]{barrett2017}
+\BIBentryALTinterwordspacing
+E.~Barrett, C.~F. Bolz-Tereick, R.~Killick, S.~Mount, and L.~Tratt, ``Virtual
+  machine warmup blows hot and cold,'' \emph{Proceedings of the ACM on
+  Programming Languages}, vol.~1, no. OOPSLA, pp. 52:1--52:27, 2017. [Online].
+  Available: \url{https://doi.org/10.1145/3133876}
+\BIBentrySTDinterwordspacing
+
+\bibitem[Bi{\o}rn-Hansen et~al.(2020)Bi{\o}rn-Hansen, Rieger, Gr{\o}nli,
+  Majchrzak, and Ghinea]{biornhansen2020}
+\BIBentryALTinterwordspacing
+A.~Bi{\o}rn-Hansen, C.~Rieger, T.-M. Gr{\o}nli, T.~A. Majchrzak, and G.~Ghinea,
+  ``An empirical investigation of performance overhead in cross-platform mobile
+  development frameworks,'' \emph{Empirical Software Engineering}, vol.~25, pp.
+  2997--3040, 2020. [Online]. Available:
+  \url{https://doi.org/10.1007/s10664-020-09827-6}
+\BIBentrySTDinterwordspacing
+
+\end{thebibliography}
+\endgroup
+\end{document}
